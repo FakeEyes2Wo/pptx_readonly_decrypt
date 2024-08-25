@@ -1,1 +1,3 @@
 # pptx_readonly_decrypt
+
+解密原理来自于删除pptx的modifyVertify标签,从而使pptx解除只读
