@@ -84,7 +84,14 @@ def process_directory(source_path, target_path=None, in_place=False):
         if not in_place:
             tgt_path.mkdir(parents=True, exist_ok=True)
             
+        # 获取绝对路径，防止目标文件夹在源文件夹内导致的无限死循环
+        resolved_tgt = tgt_path.resolve() if not in_place else None
+            
         for source_item_path in src_path.rglob('*'):
+            # 如果当前遍历到的文件/文件夹属于刚创建的目标文件夹，则直接跳过
+            if resolved_tgt and source_item_path.resolve().is_relative_to(resolved_tgt):
+                continue
+
             rel_path = source_item_path.relative_to(src_path)
             target_item_path = tgt_path / rel_path
             
@@ -97,9 +104,6 @@ def process_directory(source_path, target_path=None, in_place=False):
                     else:
                         target_item_path.parent.mkdir(parents=True, exist_ok=True)
                         decrypt_readonly_pptx(source_item_path, target_item_path)
-                elif not in_place:
-                    target_item_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source_item_path, target_item_path)
 
 def main():
     parser = argparse.ArgumentParser(description='Decrypt read-only .pptx files and copy other files in a directory.')
