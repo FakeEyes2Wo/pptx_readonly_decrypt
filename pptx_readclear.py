@@ -1,16 +1,122 @@
-from myfunction import process_directory
 import argparse
+import zipfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+import shutil
+
+def decrypt_readonly_pptx(pptx_file, modified_pptx_file):
+    pptx_path = Path(pptx_file)
+    modified_pptx_path = Path(modified_pptx_file)
+    
+    try:
+        with zipfile.ZipFile(pptx_path, 'r') as zip_ref:
+            try:
+                xml_content = zip_ref.read('ppt/presentation.xml')
+            except KeyError:
+                print(f"Warning: 'ppt/presentation.xml' not found in {pptx_path.name}. Copying as is.")
+                if pptx_path != modified_pptx_path:
+                    shutil.copy2(pptx_path, modified_pptx_path)
+                return
+
+            modified_xml = match_attr(xml_content.decode("utf-8"))
+            
+            with zipfile.ZipFile(modified_pptx_path, 'w', zipfile.ZIP_DEFLATED) as new_zip:
+                for item in zip_ref.infolist():
+                    if item.filename != 'ppt/presentation.xml':
+                        content = zip_ref.read(item.filename)
+                        new_zip.writestr(item, content)
+                new_zip.writestr('ppt/presentation.xml', modified_xml)
+    except zipfile.BadZipFile:
+        print(f"Error: {pptx_path.name} is not a valid zip archive. Copying as is.")
+        if pptx_path != modified_pptx_path:
+            shutil.copy2(pptx_path, modified_pptx_path)
+
+def match_attr(xml_content: str) -> str:
+    try:
+        # Register namespaces to prevent ns0 prefixes
+        ET.register_namespace('', 'http://schemas.openxmlformats.org/presentationml/2006/main')
+        ET.register_namespace('a', 'http://schemas.openxmlformats.org/drawingml/2006/main')
+        ET.register_namespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
+        ET.register_namespace('p', 'http://schemas.openxmlformats.org/presentationml/2006/main')
+
+        root = ET.fromstring(xml_content)
+        
+        # PPTX uses XML tag like <p:modifyVerifier...> or <modifyVerifier xmlns="..."/>
+        element_to_remove = None
+        for child in list(root):
+            if child.tag.endswith('}modifyVerifier') or child.tag == 'modifyVerifier':
+                element_to_remove = child
+                break
+                
+        if element_to_remove is not None:
+            root.remove(element_to_remove)
+            
+        return ET.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
+    except ET.ParseError as e:
+        print(f"Warning: XML parsing failed ({e}). Returning original content.")
+        return xml_content
+
+def process_directory(source_path, target_path=None, in_place=False):
+    src_path = Path(source_path)
+    
+    if in_place:
+        tgt_path = src_path
+    else:
+        if not target_path:
+            raise ValueError("target_path must be provided if not modifying in-place.")
+        tgt_path = Path(target_path)
+
+    if src_path.is_file():
+        if src_path.suffix.lower() == '.pptx':
+            if in_place:
+                # Use a temporary file for safe in-place replacement
+                temp_file = src_path.with_suffix('.tmp.pptx')
+                decrypt_readonly_pptx(src_path, temp_file)
+                temp_file.replace(tgt_path)
+            else:
+                if tgt_path.is_dir():
+                    tgt_path.mkdir(parents=True, exist_ok=True)
+                    tgt_path = tgt_path / src_path.name
+                else:
+                    tgt_path.parent.mkdir(parents=True, exist_ok=True)
+                decrypt_readonly_pptx(src_path, tgt_path)
+    elif src_path.is_dir():
+        if not in_place:
+            tgt_path.mkdir(parents=True, exist_ok=True)
+            
+        # 获取绝对路径，防止目标文件夹在源文件夹内导致的无限死循环
+        resolved_tgt = tgt_path.resolve() if not in_place else None
+            
+        for source_item_path in src_path.rglob('*'):
+            # 如果当前遍历到的文件/文件夹属于刚创建的目标文件夹，则直接跳过
+            if resolved_tgt and source_item_path.resolve().is_relative_to(resolved_tgt):
+                continue
+
+            rel_path = source_item_path.relative_to(src_path)
+            target_item_path = tgt_path / rel_path
+            
+            if source_item_path.is_file():
+                if source_item_path.suffix.lower() == '.pptx':
+                    if in_place:
+                        temp_file = source_item_path.with_suffix('.tmp.pptx')
+                        decrypt_readonly_pptx(source_item_path, temp_file)
+                        temp_file.replace(source_item_path)
+                    else:
+                        target_item_path.parent.mkdir(parents=True, exist_ok=True)
+                        decrypt_readonly_pptx(source_item_path, target_item_path)
 
 def main():
     parser = argparse.ArgumentParser(description='Decrypt read-only .pptx files and copy other files in a directory.')
-    parser.add_argument('--source_path', help='Source directory containing the .pptx files and other files.')
-    parser.add_argument('--target_path', help='Target directory where decrypted .pptx files and other files will be saved.')
+    parser.add_argument('source_path', help='Source file or directory containing the .pptx files.')
+    parser.add_argument('--target_path', '-t', help='Target file or directory where decrypted files will be saved.', default=None)
+    parser.add_argument('--in-place', '-i', action='store_true', help='Modify files in place (overwrites original files).')
     
     args = parser.parse_args()
 
-    process_directory(args.source_path, args.target_path)
+    if not args.in_place and not args.target_path:
+        parser.error('Either --target_path/-t or --in-place/-i must be provided.')
+
+    process_directory(args.source_path, target_path=args.target_path, in_place=args.in_place)
 
 if __name__ == '__main__':
     main()
-
-##python pptx_readclear.py source_dir target_dir
